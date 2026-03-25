@@ -1,5 +1,7 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol,
+};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -20,10 +22,10 @@ pub struct VerificationContract;
 #[contractimpl]
 impl VerificationContract {
     /// Initialize the verification contract with an admin.
-    /// 
+    ///
     /// Auth: No authorization required for initialization.
     /// Can only be called once.
-    /// 
+    ///
     /// Panics if:
     /// - Contract is already initialized
     pub fn initialize(env: Env, admin: Address) {
@@ -34,10 +36,10 @@ impl VerificationContract {
     }
 
     /// Verify a mentor with credentials (admin only).
-    /// 
+    ///
     /// Auth: Only the admin can verify mentors.
     /// The admin address is retrieved from persistent storage.
-    /// 
+    ///
     /// Panics if:
     /// - Contract is not initialized
     /// - Caller is not the admin
@@ -62,15 +64,17 @@ impl VerificationContract {
         if !env.storage().persistent().has(&tkey) {
             env.storage().persistent().set(&tkey, &0i32);
         }
-        env.events()
-            .publish((symbol_short!("verified"), mentor), (rec.credential_hash, rec.expiry, rec.verified_at));
+        env.events().publish(
+            (symbol_short!("verified"), mentor),
+            (rec.credential_hash, rec.expiry, rec.verified_at),
+        );
     }
 
     /// Revoke a mentor's verification (admin only).
-    /// 
+    ///
     /// Auth: Only the admin can revoke verifications.
     /// The admin address is retrieved from persistent storage.
-    /// 
+    ///
     /// Panics if:
     /// - Contract is not initialized
     /// - Caller is not the admin
@@ -84,15 +88,11 @@ impl VerificationContract {
             .expect("Not initialized");
         admin.require_auth();
         let key = (VER_KEY, mentor.clone());
-        let mut rec: VerificationRecord = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .expect("Not verified");
+        let mut rec: VerificationRecord =
+            env.storage().persistent().get(&key).expect("Not verified");
         rec.is_active = false;
         env.storage().persistent().set(&key, &rec);
-        env.events()
-            .publish((symbol_short!("revoked"), mentor), ());
+        env.events().publish((symbol_short!("revoked"), mentor), ());
     }
 
     pub fn is_verified(env: Env, mentor: Address) -> bool {
@@ -106,10 +106,7 @@ impl VerificationContract {
 
     pub fn get_verification(env: Env, mentor: Address) -> VerificationRecord {
         let key = (VER_KEY, mentor);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .expect("Not verified")
+        env.storage().persistent().get(&key).expect("Not verified")
     }
 }
 
@@ -117,7 +114,10 @@ impl VerificationContract {
 mod test {
     extern crate std;
     use super::*;
-    use soroban_sdk::{testutils::{Address as AddressTestUtils, MockAuth, MockAuthInvoke, Ledger}, Address, BytesN, Env, IntoVal};
+    use soroban_sdk::{
+        testutils::{Address as AddressTestUtils, Ledger, MockAuth, MockAuthInvoke},
+        Address, BytesN, Env, IntoVal,
+    };
 
     fn setup() -> (Env, Address, Address) {
         let env = Env::default();

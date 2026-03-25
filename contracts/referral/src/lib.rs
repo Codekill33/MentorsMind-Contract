@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -42,18 +40,28 @@ impl ReferralContract {
             panic!("Already initialized");
         }
         env.storage().persistent().set(&DataKey::Admin, &admin);
-        env.storage().persistent().set(&DataKey::MNTToken, &mnt_token);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MNTToken, &mnt_token);
     }
 
     pub fn register_referral(env: Env, referrer: Address, referee: Address, is_mentor: bool) {
-        let admin: Address = env.storage().persistent().get(&DataKey::Admin).expect("Not initialized");
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
         admin.require_auth();
 
         if referrer == referee {
             panic!("Self-referral not allowed");
         }
 
-        if env.storage().persistent().has(&DataKey::Referral(referee.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Referral(referee.clone()))
+        {
             panic!("Referee already registered");
         }
 
@@ -69,79 +77,118 @@ impl ReferralContract {
             completed: false,
         };
 
-        env.storage().persistent().set(&DataKey::Referral(referee.clone()), &info);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Referral(referee.clone()), &info);
 
-        let count: u32 = env.storage().persistent().get(&DataKey::ReferrerCount(referrer.clone())).unwrap_or(0);
-        env.storage().persistent().set(&DataKey::ReferrerCount(referrer.clone()), &(count + 1));
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ReferrerCount(referrer.clone()))
+            .unwrap_or(0);
+        env.storage()
+            .persistent()
+            .set(&DataKey::ReferrerCount(referrer.clone()), &(count + 1));
 
-        env.events().publish(
-            (symbol_short!("ref_reg"), referrer, referee),
-            is_mentor,
-        );
+        env.events()
+            .publish((symbol_short!("ref_reg"), referrer, referee), is_mentor);
     }
 
     pub fn fulfill_referral(env: Env, referee: Address) {
-        let admin: Address = env.storage().persistent().get(&DataKey::Admin).expect("Not initialized");
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
         admin.require_auth();
 
-        let mut info: ReferralInfo = env.storage().persistent().get(&DataKey::Referral(referee.clone())).expect("Referral not found");
+        let mut info: ReferralInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Referral(referee.clone()))
+            .expect("Referral not found");
         if info.completed {
             panic!("Already completed");
         }
 
         info.completed = true;
-        env.storage().persistent().set(&DataKey::Referral(referee.clone()), &info);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Referral(referee.clone()), &info);
 
         let reward = match info.referee_type {
             RefereeType::Mentor => REWARD_MENTOR,
             RefereeType::Learner => REWARD_LEARNER,
         };
 
-        let mut pending: i128 = env.storage().persistent().get(&DataKey::PendingReward(info.referrer.clone())).unwrap_or(0);
+        let mut pending: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingReward(info.referrer.clone()))
+            .unwrap_or(0);
         pending += reward;
-        env.storage().persistent().set(&DataKey::PendingReward(info.referrer), &pending);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingReward(info.referrer), &pending);
     }
 
     pub fn claim_reward(env: Env, referrer: Address) {
         referrer.require_auth();
 
-        let pending: i128 = env.storage().persistent().get(&DataKey::PendingReward(referrer.clone())).unwrap_or(0);
+        let pending: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingReward(referrer.clone()))
+            .unwrap_or(0);
         if pending <= 0 {
             panic!("No rewards to claim");
         }
 
-        let mnt_token: Address = env.storage().persistent().get(&DataKey::MNTToken).expect("Token not set");
-        
+        let mnt_token: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MNTToken)
+            .expect("Token not set");
+
         // Call MNT Token to mint rewards.
         let client = mentorminds_mnt_token::MNTTokenClient::new(&env, &mnt_token);
         client.mint(&referrer, &pending);
 
-        env.storage().persistent().set(&DataKey::PendingReward(referrer.clone()), &0i128);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PendingReward(referrer.clone()), &0i128);
 
-        env.events().publish(
-            (symbol_short!("rew_clm"), referrer),
-            pending,
-        );
+        env.events()
+            .publish((symbol_short!("rew_clm"), referrer), pending);
     }
 
     pub fn get_referral_count(env: Env, referrer: Address) -> u32 {
-        env.storage().persistent().get(&DataKey::ReferrerCount(referrer)).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::ReferrerCount(referrer))
+            .unwrap_or(0)
     }
 
     pub fn get_pending_rewards(env: Env, referrer: Address) -> i128 {
-        env.storage().persistent().get(&DataKey::PendingReward(referrer)).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingReward(referrer))
+            .unwrap_or(0)
     }
-    
+
     pub fn get_admin(env: Env) -> Address {
-        env.storage().persistent().get(&DataKey::Admin).expect("Not initialized")
+        env.storage()
+            .persistent()
+            .get(&DataKey::Admin)
+            .expect("Not initialized")
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::{Address as _};
     use mentorminds_mnt_token::{MNTToken, MNTTokenClient};
+    use soroban_sdk::testutils::Address as _;
 
     struct TestFixture {
         env: Env,
@@ -158,7 +205,7 @@ mod test {
             let admin = Address::generate(&env);
             let mnt_id = env.register_contract(None, MNTToken);
             let ref_id = env.register_contract(None, ReferralContract);
-            
+
             let mnt_client = MNTTokenClient::new(&env, &mnt_id);
             // Make the referral contract the admin of the MNT token so it can mint!
             mnt_client.initialize(&ref_id);
