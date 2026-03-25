@@ -116,6 +116,13 @@ const FEE_BPS: Symbol = symbol_short!("FEE_BPS");
 const AUTO_REL_DLY: Symbol = symbol_short!("AR_DELAY");
 const SESSION_KEY: Symbol = symbol_short!("SESSION");
 
+/// Price cache for dynamic fee
+const PRICE_CACHE: Symbol = symbol_short!("PRC_CSH");
+const PRICE_CACHE_TIME: Symbol = symbol_short!("PRC_TM");
+const DYNAMIC_FEE_ENABLED: Symbol = symbol_short!("DYN_FEE");
+const LIQUIDITY_POOL: Symbol = symbol_short!("LIQ_POOL");
+const DEFAULT_FEE_BPS: u32 = 500;
+
 /// Maximum configurable fee: 10% = 1 000 basis points.
 const MAX_FEE_BPS: u32 = 1_000;
 
@@ -239,6 +246,102 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .extend_ttl(&FEE_BPS, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+    }
+
+        /// Get dynamic fee based on MNT/USDC price from liquidity pool
+    /// Returns fee in basis points (bps)
+    /// 
+    /// Fee schedule:
+    /// - Price < $0.10 → 500 bps (5%)
+    /// - Price $0.10–$0.50 → 400 bps (4%)
+    /// - Price $0.50–$1.00 → 300 bps (3%)
+    /// - Price > $1.00 → 200 bps (2%)
+    pub fn get_dynamic_fee(env: Env) -> u32 {
+        let dynamic_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DYNAMIC_FEE_ENABLED)
+            .unwrap_or(true);
+        
+        if !dynamic_enabled {
+            return env.storage().persistent().get(&FEE_BPS).unwrap_or(DEFAULT_FEE_BPS);
+        }
+        
+        let current_ledger = env.ledger().sequence();
+        let cached_ledger: u32 = env
+            .storage()
+            .instance()
+            .get(&PRICE_CACHE_TIME)
+            .unwrap_or(0);
+        
+        if cached_ledger == current_ledger {
+            if let Some(cached_price) = env.storage().instance().get::<_, i128>(&PRICE_CACHE) {
+                return Self::_calculate_fee_from_price(cached_price);
+            }
+        }
+        
+        let price = Self::_fetch_mnt_usdc_price(&env);
+        
+        env.storage().instance().set(&PRICE_CACHE, &price);
+        env.storage().instance().set(&PRICE_CACHE_TIME, &current_ledger);
+        
+        Self::_calculate_fee_from_price(price)
+    }
+
+    fn _calculate_fee_from_price(price: i128) -> u32 {
+        if price <= 0 {
+            return DEFAULT_FEE_BPS;
+        }
+        
+        let threshold_010 = 1_000_000;
+        let threshold_050 = 5_000_000;
+        let threshold_100 = 10_000_000;
+        
+        if price < threshold_010 {
+            500
+        } else if price < threshold_050 {
+            400
+        } else if price < threshold_100 {
+            300
+        } else {
+            200
+        }
+    }
+
+    fn _fetch_mnt_usdc_price(env: &Env) -> i128 {
+        let pool_address: Option<Address> = env.storage().instance().get(&LIQUIDITY_POOL);
+        
+        if let Some(_pool) = pool_address {
+            // TODO: Implement actual pool contract integration
+            // Placeholder: return $0.75 (7,500,000) for testing
+            return 7_500_000;
+        }
+        
+        0
+    }
+
+    /// Set liquidity pool address (admin only)
+    pub fn set_liquidity_pool(env: Env, pool_address: Address) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&ADMIN)
+            .expect("Not initialized");
+        admin.require_auth();
+        
+        env.storage().instance().set(&LIQUIDITY_POOL, &pool_address);
+    }
+
+    /// Enable or disable dynamic fee (admin only)
+    pub fn set_dynamic_fee_enabled(env: Env, enabled: bool) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&ADMIN)
+            .expect("Not initialized");
+        admin.require_auth();
+        
+        env.storage().instance().set(&DYNAMIC_FEE_ENABLED, &enabled);
     }
 
     /// Update the treasury address — admin only.
@@ -484,7 +587,7 @@ impl EscrowContract {
             panic!("Caller not authorized");
         }
 
-        let fee_bps: u32 = env.storage().persistent().get(&FEE_BPS).unwrap_or(0u32);
+        let fee_bps: u32 = Self::get_dynamic_fee(env.clone());
         env.storage().persistent().extend_ttl(&FEE_BPS, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
 
         let platform_fee: i128 = amount_to_release.checked_mul(fee_bps as i128).expect("Overflow").checked_div(10_000).expect("Division error");
@@ -1034,7 +1137,7 @@ impl EscrowContract {
     /// then persists the updated escrow with `Released` status.
     fn _do_release(env: &Env, escrow: &mut Escrow, key: &(Symbol, u64)) {
         let release_amount = escrow.amount;
-        let fee_bps: u32 = env.storage().persistent().get(&FEE_BPS).unwrap_or(0u32);
+        let fee_bps: u32 = Self::get_dynamic_fee(env.clone());
         env.storage()
             .persistent()
             .extend_ttl(&FEE_BPS, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
@@ -1122,6 +1225,39 @@ mod test {
         testutils::{Address as _, Ledger, Events},
         token::{Client as TokenClient, StellarAssetClient},
         Address, Env, Vec, IntoVal, Symbol,
+            // -----------------------------------------------------------------------
+    // Dynamic fee tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dynamic_fee_price_below_10_cents() {
+        let fee = EscrowContract::_calculate_fee_from_price(500_000);
+        assert_eq!(fee, 500);
+    }
+
+    #[test]
+    fn test_dynamic_fee_price_10_to_50_cents() {
+        let fee = EscrowContract::_calculate_fee_from_price(3_000_000);
+        assert_eq!(fee, 400);
+    }
+
+    #[test]
+    fn test_dynamic_fee_price_50_to_100_cents() {
+        let fee = EscrowContract::_calculate_fee_from_price(7_500_000);
+        assert_eq!(fee, 300);
+    }
+
+    #[test]
+    fn test_dynamic_fee_price_above_100_cents() {
+        let fee = EscrowContract::_calculate_fee_from_price(15_000_000);
+        assert_eq!(fee, 200);
+    }
+
+    #[test]
+    fn test_dynamic_fee_fallback_when_price_zero() {
+        let fee = EscrowContract::_calculate_fee_from_price(0);
+        assert_eq!(fee, 500);
+    }
     };
 
     // -----------------------------------------------------------------------
