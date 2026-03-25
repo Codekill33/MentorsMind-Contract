@@ -148,6 +148,16 @@ impl EscrowContract {
     }
 
     /// Update the platform fee — admin only, capped at 1 000 bps (10%).
+    /// Update the fee basis points (admin only).
+    /// 
+    /// Auth: Only the admin can update fees.
+    /// The admin address is retrieved from persistent storage.
+    /// 
+    /// Panics if:
+    /// - Contract is not initialized
+    /// - Caller is not the admin
+    /// - Caller fails authorization check
+    /// - New fee exceeds maximum (1000 bps = 10%)
     pub fn update_fee(env: Env, new_fee_bps: u32) {
         let admin: Address = env
             .storage()
@@ -170,6 +180,14 @@ impl EscrowContract {
     }
 
     /// Update the treasury address — admin only.
+    /// 
+    /// Auth: Only the admin can update the treasury address.
+    /// The admin address is retrieved from persistent storage.
+    /// 
+    /// Panics if:
+    /// - Contract is not initialized
+    /// - Caller is not the admin
+    /// - Caller fails authorization check
     pub fn update_treasury(env: Env, new_treasury: Address) {
         let admin: Address = env
             .storage()
@@ -188,6 +206,14 @@ impl EscrowContract {
     }
 
     /// Add or remove an approved token (admin only).
+    /// 
+    /// Auth: Only the admin can manage approved tokens.
+    /// The admin address is retrieved from persistent storage.
+    /// 
+    /// Panics if:
+    /// - Contract is not initialized
+    /// - Caller is not the admin
+    /// - Caller fails authorization check
     pub fn set_approved_token(env: Env, token_address: Address, approved: bool) {
         let admin: Address = env
             .storage()
@@ -208,6 +234,9 @@ impl EscrowContract {
 
     /// Create a new escrow.
     ///
+    /// Auth: Only the learner can create an escrow for themselves.
+    /// The learner must provide valid authorization.
+    ///
     /// Transfers `amount` tokens from `learner` to the contract.
     ///
     /// - `session_end_time`: unix timestamp (seconds) marking when the session
@@ -218,6 +247,8 @@ impl EscrowContract {
     /// - `amount` ≤ 0
     /// - `token_address` is not on the approved list
     /// - learner's on-chain balance is insufficient
+    /// - Caller is not the learner
+    /// - Caller fails authorization check
     pub fn create_escrow(
         env: Env,
         mentor: Address,
@@ -313,6 +344,16 @@ impl EscrowContract {
     /// Calculates the platform fee (`gross * fee_bps / 10_000`), transfers the
     /// fee to the treasury, and transfers the remainder to the mentor.
     /// Both amounts are stored on the escrow record and emitted in the event.
+    /// Release funds to the mentor.
+    /// 
+    /// Auth: Only the learner or admin can release funds.
+    /// The caller must provide valid authorization.
+    /// 
+    /// Panics if:
+    /// - Escrow does not exist
+    /// - Escrow is not in Active status  
+    /// - Caller is not the learner or admin
+    /// - Caller fails authorization check
     pub fn release_funds(env: Env, caller: Address, escrow_id: u64) {
         let key = (symbol_short!("ESCROW"), escrow_id);
         env.storage()
@@ -338,8 +379,8 @@ impl EscrowContract {
             .persistent()
             .extend_ttl(&ADMIN, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
 
+        // Auth check: caller must be learner OR admin
         caller.require_auth();
-
         if caller != escrow.learner && caller != admin {
             panic!("Caller not authorized");
         }
@@ -401,6 +442,16 @@ impl EscrowContract {
     /// - Escrow does not exist.
     /// - Escrow is not `Active`.
     /// - Caller is neither mentor nor learner.
+    /// Dispute an active escrow.
+    /// 
+    /// Auth: Only the mentor or learner can dispute their escrow.
+    /// The caller must provide valid authorization.
+    /// 
+    /// Panics if:
+    /// - Escrow does not exist
+    /// - Escrow is not in Active status
+    /// - Caller is not the mentor or learner
+    /// - Caller fails authorization check
     pub fn dispute(env: Env, caller: Address, escrow_id: u64, reason: Symbol) {
         let key = (symbol_short!("ESCROW"), escrow_id);
         env.storage()
@@ -417,8 +468,8 @@ impl EscrowContract {
             panic!("Escrow not active");
         }
 
+        // Auth check: caller must be mentor OR learner
         caller.require_auth();
-
         if caller != escrow.mentor && caller != escrow.learner {
             panic!("Caller not authorized to dispute");
         }
@@ -455,6 +506,18 @@ impl EscrowContract {
     /// - Escrow does not exist.
     /// - Escrow status is not `Disputed`.
     /// - `mentor_pct` > 100.
+    /// Resolve a disputed escrow by splitting funds (admin only).
+    /// 
+    /// Auth: Only the admin can resolve disputes.
+    /// The admin address is retrieved from persistent storage.
+    /// 
+    /// Panics if:
+    /// - Contract is not initialized
+    /// - Caller is not the admin
+    /// - Caller fails authorization check
+    /// - Escrow does not exist
+    /// - Escrow is not in Disputed status
+    /// - mentor_pct is greater than 100
     pub fn resolve_dispute(env: Env, escrow_id: u64, mentor_pct: u32) {
         // --- Admin auth ---
         let admin: Address = env
@@ -549,6 +612,17 @@ impl EscrowContract {
     /// Can be called on `Active` or `Disputed` escrows; panics if already
     /// `Released`, `Refunded`, or `Resolved`.
     /// Transfers `escrow.amount` tokens from contract → learner.
+    /// Refund an escrow to the learner (admin only).
+    /// 
+    /// Auth: Only the admin can issue refunds.
+    /// The admin address is retrieved from persistent storage.
+    /// 
+    /// Panics if:
+    /// - Contract is not initialized
+    /// - Caller is not the admin
+    /// - Caller fails authorization check
+    /// - Escrow does not exist
+    /// - Escrow is already Released, Refunded, or Resolved
     pub fn refund(env: Env, escrow_id: u64) {
         let admin: Address = env
             .storage()
@@ -731,9 +805,9 @@ mod test {
     extern crate std;
     use super::*;
     use soroban_sdk::{
-        testutils::{Address as _, Ledger},
+        testutils::{Address as _, Ledger, MockAuth, MockAuthInvoke},
         token::{Client as TokenClient, StellarAssetClient},
-        Address, Env, Vec,
+        Address, Env, Vec, IntoVal,
     };
 
     // -----------------------------------------------------------------------
@@ -1683,5 +1757,53 @@ mod test {
             );
         }));
         assert!(result.is_err(), "Should panic on zero amount");
+    }
+
+    // -----------------------------------------------------------------------
+    // Authorization Hardening Tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dispute_mentor_authorized() {
+        let f = TestFixture::setup();
+        let escrow_id = f.create_escrow_at(0);
+        
+        // Mentor should be able to dispute
+        f.client().dispute(&f.mentor, &escrow_id, &symbol_short!("ISSUE"));
+        let escrow = f.client().get_escrow(&escrow_id);
+        assert_eq!(escrow.status, EscrowStatus::Disputed);
+    }
+
+    #[test]
+    fn test_dispute_learner_authorized() {
+        let f = TestFixture::setup();
+        let escrow_id = f.create_escrow_at(0);
+        
+        // Learner should be able to dispute
+        f.client().dispute(&f.learner, &escrow_id, &symbol_short!("ISSUE"));
+        let escrow = f.client().get_escrow(&escrow_id);
+        assert_eq!(escrow.status, EscrowStatus::Disputed);
+    }
+
+    #[test]
+    fn test_release_funds_learner_authorized() {
+        let f = TestFixture::setup();
+        let escrow_id = f.create_escrow_at(0);
+        
+        // Learner should be able to release funds
+        f.client().release_funds(&f.learner, &escrow_id);
+        let escrow = f.client().get_escrow(&escrow_id);
+        assert_eq!(escrow.status, EscrowStatus::Released);
+    }
+
+    #[test]
+    fn test_release_funds_admin_authorized() {
+        let f = TestFixture::setup();
+        let escrow_id = f.create_escrow_at(0);
+        
+        // Admin should be able to release funds
+        f.client().release_funds(&f.admin, &escrow_id);
+        let escrow = f.client().get_escrow(&escrow_id);
+        assert_eq!(escrow.status, EscrowStatus::Released);
     }
 }
