@@ -1,10 +1,13 @@
 [workspace]
 members = [
     "escrow",
+    "contracts/governance",
+    "contracts/allowance",
     "contracts/verification",
-    "contracts/mnt-token",
-    # "multisig",
-    # "payment-router",
+    "contracts/oracle",
+    "contracts/timelock",
+    "contracts/vesting",
+    "tests",
 ]
 
 [workspace.package]
