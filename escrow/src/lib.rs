@@ -21,6 +21,15 @@ pub enum MilestoneStatus {
 }
 
 #[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd)]
+pub enum KycLevel {
+    None = 0,
+    Basic = 1,
+    Enhanced = 2,
+    Institutional = 3,
+}
+
+#[contracttype]
 #[derive(Clone, Debug)]
 pub struct MilestoneSpec {
     pub description_hash: BytesN<32>,
@@ -151,6 +160,7 @@ const ORACLE_ID: Symbol = symbol_short!("ORACLE");
 const ORACLE_MAX_AGE: Symbol = symbol_short!("OR_AGE");
 const MENTOR_ESCROWS: Symbol = symbol_short!("MNT_ESC");
 const LEARNER_ESCROWS: Symbol = symbol_short!("LRN_ESC");
+const KYC_REGISTRY: Symbol = symbol_short!("KYC_REG");
 const MAX_FEE_BPS: u32 = 1_000;
 
 /// Default auto-release delay: 72 hours in seconds.
@@ -172,6 +182,11 @@ const ESCROW_TTL_BUMP: u32 = 1_000_000;
 
 #[contract]
 pub struct EscrowContract;
+
+#[soroban_sdk::contractclient(name = "KycRegistryClient")]
+pub trait KycRegistryTrait {
+    fn is_kyc_valid(env: Env, user: Address, min_level: KycLevel) -> bool;
+}
 
 #[contractimpl]
 impl EscrowContract {
@@ -376,6 +391,21 @@ impl EscrowContract {
         env.storage().instance().set(&DYNAMIC_FEE_ENABLED, &enabled);
     }
 
+    /// Set the KYC Registry contract address (admin only).
+    pub fn set_kyc_registry(env: Env, address: Address) {
+        let admin: Address = env
+            .storage()
+            .persistent()
+            .get(&ADMIN)
+            .expect("Not initialized");
+        env.storage()
+            .persistent()
+            .extend_ttl(&ADMIN, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+        admin.require_auth();
+
+        env.storage().instance().set(&KYC_REGISTRY, &address);
+    }
+
     /// Update the treasury address — admin only.
     ///
     /// Auth: Only the admin can update the treasury address.
@@ -456,19 +486,6 @@ impl EscrowContract {
         session_end_time: u64,
         total_sessions: u32,
     ) -> u64 {
-            (Symbol::new(&env, "Escrow"), Symbol::new(&env, "Created"), count),
-            EscrowCreatedEventData {
-                mentor,
-                learner,
-                amount,
-                session_id,
-                token_address,
-                session_end_time,
-            },
-        );
-
-        count
-=======
         Self::_create_escrow_internal(
             env,
             mentor,
@@ -483,7 +500,6 @@ impl EscrowContract {
             token_address,
             total_sessions,
         )
-
     }
 
     /// Release funds to the mentor (called by learner or admin).
@@ -1132,6 +1148,111 @@ impl EscrowContract {
             dest_asset,
             total_sessions,
         )
+    }
+
+    fn _create_escrow_internal(
+        env: Env,
+        mentor: Address,
+        learner: Address,
+        amount: i128,
+        session_id: Symbol,
+        token_address: Address,
+        session_end_time: u64,
+        usd_amount: i128,
+        quoted_token_amount: i128,
+        send_asset: Address,
+        dest_asset: Address,
+        total_sessions: u32,
+    ) -> u64 {
+        if amount <= 0 {
+            panic!("Amount must be greater than zero");
+        }
+        if !Self::_is_token_approved(&env, &token_address) {
+            panic!("Token not approved");
+        }
+
+        // --- KYC Check ---
+        if let Some(registry_addr) = env.storage().instance().get::<_, Address>(&KYC_REGISTRY) {
+            let kyc_client = KycRegistryClient::new(&env, &registry_addr);
+            if !kyc_client.is_kyc_valid(&learner, &KycLevel::Basic) {
+                panic!("Learner KYC basic level required");
+            }
+        }
+
+        // --- Check session_id uniqueness ---
+        let session_key = (SESSION_KEY, session_id.clone());
+        if env.storage().persistent().has(&session_key) {
+            panic!("Session ID already exists");
+        }
+        env.storage().persistent().set(&session_key, &true);
+        env.storage().persistent().extend_ttl(&session_key, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+
+        // --- Increment and persist escrow counter ---
+        let mut count: u64 = env.storage().persistent().get(&ESCROW_COUNT).unwrap_or(0);
+        count += 1;
+        env.storage().persistent().set(&ESCROW_COUNT, &count);
+        env.storage()
+            .persistent()
+            .extend_ttl(&ESCROW_COUNT, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+
+        // --- Transfer tokens ---
+        let token_client = token::Client::new(&env, &token_address);
+        token_client.transfer(&learner, &env.current_contract_address(), &amount);
+
+        // --- Create and persist escrow record ---
+        let auto_release_delay = Self::get_auto_release_delay(env.clone());
+        let escrow = Escrow {
+            id: count,
+            mentor: mentor.clone(),
+            learner: learner.clone(),
+            amount,
+            session_id: session_id.clone(),
+            status: EscrowStatus::Active,
+            created_at: env.ledger().timestamp(),
+            token_address: token_address.clone(),
+            platform_fee: 0,
+            net_amount: 0,
+            session_end_time,
+            auto_release_delay,
+            dispute_reason: symbol_short!(""),
+            resolved_at: 0,
+            usd_amount,
+            quoted_token_amount,
+            send_asset,
+            dest_asset,
+            total_sessions,
+            sessions_completed: 0,
+        };
+        let key = (symbol_short!("ESCROW"), count);
+        env.storage().persistent().set(&key, &escrow);
+
+        // --- Update index maps ---
+        let mentor_key = (MENTOR_ESCROWS, mentor.clone());
+        let mut mentor_escrows: Vec<u64> = env.storage().persistent().get(&mentor_key).unwrap_or(Vec::new(&env));
+        mentor_escrows.push_back(count);
+        env.storage().persistent().set(&mentor_key, &mentor_escrows);
+        env.storage().persistent().extend_ttl(&mentor_key, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+
+        let learner_key = (LEARNER_ESCROWS, learner.clone());
+        let mut learner_escrows: Vec<u64> = env.storage().persistent().get(&learner_key).unwrap_or(Vec::new(&env));
+        learner_escrows.push_back(count);
+        env.storage().persistent().set(&learner_key, &learner_escrows);
+        env.storage().persistent().extend_ttl(&learner_key, ESCROW_TTL_THRESHOLD, ESCROW_TTL_BUMP);
+
+        // --- Emit event ---
+        env.events().publish(
+            (Symbol::new(&env, "Escrow"), Symbol::new(&env, "Created"), count),
+            EscrowCreatedEventData {
+                mentor,
+                learner,
+                amount,
+                session_id,
+                token_address,
+                session_end_time,
+            },
+        );
+
+        count
     }
     /// Shared release logic used by both `release_funds` and `try_auto_release`.
     ///
