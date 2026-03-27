@@ -1,9 +1,9 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol, IntoVal, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec,
 };
-use soroban_sdk::token::TokenInterface;
+use soroban_sdk::token;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -190,7 +190,7 @@ impl VestingContract {
         }
 
         let token: Address = env.storage().persistent().get(&DataKey::Token).expect("Not initialized");
-        let token_client = TokenInterface::new(&env, &token);
+        let token_client = token::Client::new(&env, &token);
         
         // Check contract has enough tokens
         let contract_balance = token_client.balance(&env.current_contract_address());
@@ -241,7 +241,7 @@ impl VestingContract {
         let refund_amount = vested_amount - schedule.claimed;
 
         let token: Address = env.storage().persistent().get(&DataKey::Token).expect("Not initialized");
-        let token_client = TokenInterface::new(&env, &token);
+        let token_client = token::Client::new(&env, &token);
 
         // Return unvested tokens to treasury (admin)
         if unvested_amount > 0 {
@@ -256,8 +256,14 @@ impl VestingContract {
             .get(&DataKey::BeneficiarySchedules(schedule.beneficiary.clone()))
             .unwrap_or(Vec::new(&env));
         
-        schedules = schedules.filter(|&id| id != schedule_id);
-        env.storage().persistent().set(&DataKey::BeneficiarySchedules(schedule.beneficiary), &schedules);
+        let mut new_schedules: Vec<u32> = Vec::new(&env);
+        for id in schedules.iter() {
+            if id != schedule_id {
+                new_schedules.push_back(id);
+            }
+        }
+        schedules = new_schedules;
+        env.storage().persistent().set(&DataKey::BeneficiarySchedules(schedule.beneficiary.clone()), &schedules);
 
         // Emit event
         env.events().publish(

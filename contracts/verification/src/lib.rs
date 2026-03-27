@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, BytesN, Env, Symbol};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Symbol};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,9 +32,6 @@ pub struct VerificationRevokedEventData {
     pub revoked: bool,
 }
 
-const ADMIN: Symbol = symbol_short!("ADMIN");
-const VER_KEY: Symbol = symbol_short!("VER");
-const TIER_KEY: Symbol = symbol_short!("TIER");
 
 #[contract]
 pub struct VerificationContract;
