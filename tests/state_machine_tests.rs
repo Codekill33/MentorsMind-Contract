@@ -1,7 +1,7 @@
-use soroban_sdk::{Env};
-use shared::{StateMachine};
-use mentorminds_escrow::{EscrowStatus};
-use mentorminds_governance::{ProposalStatus};
+use mentorminds_escrow::EscrowStatus;
+use mentorminds_governance::ProposalStatus;
+use shared::StateMachine;
+use soroban_sdk::Env;
 
 #[test]
 fn test_escrow_state_machine_transitions() {
@@ -13,7 +13,7 @@ fn test_escrow_state_machine_transitions() {
         EscrowStatus::Refunded,
         EscrowStatus::Resolved,
     ];
-    
+
     for from in states.iter() {
         for to in states.iter() {
             let is_valid = EscrowStatus::is_valid_transition(&env, from, to);
@@ -26,11 +26,9 @@ fn test_escrow_state_machine_transitions() {
                 _ => false,
             };
             assert_eq!(
-                is_valid, 
-                expected_valid, 
-                "Escrow transition validation failed from {:?} to {:?}", 
-                from, 
-                to
+                is_valid, expected_valid,
+                "Escrow transition validation failed from {:?} to {:?}",
+                from, to
             );
         }
     }
@@ -46,7 +44,7 @@ fn test_governance_state_machine_transitions() {
         ProposalStatus::Executed,
         ProposalStatus::Cancelled,
     ];
-    
+
     for from in states.iter() {
         for to in states.iter() {
             let is_valid = ProposalStatus::is_valid_transition(&env, from, to);
@@ -58,11 +56,9 @@ fn test_governance_state_machine_transitions() {
                 _ => false,
             };
             assert_eq!(
-                is_valid, 
-                expected_valid, 
-                "Governance transition validation failed from {:?} to {:?}", 
-                from, 
-                to
+                is_valid, expected_valid,
+                "Governance transition validation failed from {:?} to {:?}",
+                from, to
             );
         }
     }
